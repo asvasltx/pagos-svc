@@ -60,3 +60,8 @@ docker compose up --build
 mvn test      # unit tests + Cucumber
 mvn verify    # + verificación de cobertura JaCoCo (100% LINE, falla si baja)
 ```
+
+## Modelo de ramificacion elegido: Gitflow
+
+- Usamos este modelo porque es el mas adecuado para el proyecto, se encarga de separar el codigo en desarrollo del codigo estable,  permite subir nuevas funciones sin ensuciar el codigo principal y
+  facilita la correcion inmediata de fallos criticos.
