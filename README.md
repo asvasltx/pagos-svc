@@ -65,3 +65,30 @@ mvn verify    # + verificación de cobertura JaCoCo (100% LINE, falla si baja)
 
 - Usamos este modelo porque es el mas adecuado para el proyecto, se encarga de separar el codigo en desarrollo del codigo estable,  permite subir nuevas funciones sin ensuciar el codigo principal y
   facilita la correcion inmediata de fallos criticos.
+
+  ## Convenciones y buenas prácticas del equipo
+
+### 1. Convención de commits
+Seguimos el formato estándar: `tipo(alcance): descripcion-corta` (en minúsculas y sin tildes).
+
+| Tipo | Propósito | Ejemplo |
+| :--- | :--- | :--- |
+| `feat` | Nueva funcionalidad | `feat(ui): agregar pie de pagina` |
+| `fix` | Corrección de bug | `fix(home): corregir titulo` |
+| `docs` | Documentación | `docs: agregar changelog` |
+| `chore` | Tareas de mantenimiento o CI/CD | `chore(ci): agregar workflow hola mundo` |
+
+### 2. Naming de ramas
+* Formato: `feature/<nombre>` y `hotfix/<nombre>`[cite: 1].
+* Todo en minúsculas y con palabras separadas por guiones[cite: 1].
+* Ejemplos: `feature/pagina-presentacion`, `hotfix/titulo-pagina`[cite: 1].
+
+### 3. Flujo de merge
+* Las ramas `feature/` y `hotfix/` siempre ingresan mediante Pull Request; nunca se realiza `push` directo a `main` ni a `develop`[cite: 1].
+* Se exige al menos una aprobación obligatoria del compañero antes de realizar el merge[cite: 1].
+* Se utiliza *merge commit* o *squash*, y la rama remota debe borrarse tras la integración[cite: 1].
+
+### 4. Estrategia de revisión
+* El autor abre el PR, completa la descripción y asigna formalmente a su compañero como revisor[cite: 1].
+* El revisor examina la pestaña de cambios (*diff*), deja comentarios si es necesario y aprueba (*Approve*) antes de fusionar[cite: 1].
+* Antes de solicitar revisión, se debe comprobar localmente que las pruebas del proyecto se ejecutan de manera satisfactoria[cite: 1].
