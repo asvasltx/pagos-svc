@@ -1,8 +1,31 @@
 services:
   pagos-svc:
     build: .
-    image: duoc/casoejemplo-pagos:1.0.0
+    image: ${IMAGE:-duoc/casoejemplo-pagos}:${TAG:-1.0.0}
     container_name: casoejemplo-pagos-svc
     ports:
       - "${PORT:-8080}:8080"
     restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/actuator/health"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 40s
+
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          memory: 256M
+
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

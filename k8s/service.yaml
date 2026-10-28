@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: pagos-svc
+  labels:
+    app: pagos-svc
+spec:
+  type: ClusterIP
+  selector:
+    app: pagos-svc
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
