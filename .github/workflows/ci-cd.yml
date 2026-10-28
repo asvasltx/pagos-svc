@@ -1,0 +1,433 @@
+name: CI/CD pagos-svc
+
+# ---------------------------------------------------------------------------
+# Flujo (cada etapa bloquea a la siguiente si falla):
+#
+#   test ──┐
+#          ├──> docker (build + Trivy + push GHCR) ──> deploy-staging ──> deploy-produccion
+#   seguridad ┘                                      (Docker Compose)      (Kubernetes/kind)
+#
+#   * Pull Request  : test + seguridad + build/escaneo de imagen (no publica ni despliega)
+#   * push a develop: ... + publica imagen + despliega en STAGING
+#   * push a main   : ... + despliega en STAGING y luego PRODUCCION simulada
+#   * Si algo falla en push, el job "alerta-fallo" abre un Issue automaticamente.
+# ---------------------------------------------------------------------------
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+    inputs:
+      replicas_min:
+        description: "Replicas minimas (HPA) en el despliegue simulado de produccion"
+        required: false
+        default: "2"
+      trivy_severity:
+        description: "Severidades que bloquean el pipeline en el escaneo de la imagen"
+        required: false
+        default: "CRITICAL,HIGH"
+
+# Minimo privilegio: por defecto el token solo puede leer el repositorio.
+# Cada job amplia solo lo que necesita.
+permissions:
+  contents: read
+
+# Un PR nuevo cancela la ejecucion anterior del mismo PR.
+# En ramas (push) NO se cancela, para no interrumpir un despliegue a medias.
+concurrency:
+  group: cicd-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  JAVA_VERSION: "21"
+  # Parametros ajustables del pipeline (valores por defecto o los de workflow_dispatch)
+  TRIVY_SEVERITY: ${{ inputs.trivy_severity || 'CRITICAL,HIGH' }}
+  MIN_REPLICAS: ${{ inputs.replicas_min || '2' }}
+
+jobs:
+  # -------------------------------------------------------------------------
+  # 1. Pruebas automatizadas (IE2)
+  # -------------------------------------------------------------------------
+  test:
+    name: 1 - Pruebas y cobertura
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Descargar codigo
+        uses: actions/checkout@v4
+
+      - name: Configurar JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      # "verify" ejecuta: tests unitarios (JUnit) + Cucumber (BDD) + JaCoCo.
+      # JaCoCo esta configurado en el pom.xml con minimo 100% de lineas:
+      # si la cobertura baja, el build falla y el pipeline se detiene.
+      - name: Ejecutar pruebas y verificar cobertura
+        run: mvn -B verify
+
+      - name: Resumen de cobertura
+        if: always()
+        run: |
+          if [ -f target/site/jacoco/jacoco.csv ]; then
+            python3 - <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+          import csv
+          missed = covered = 0
+          with open("target/site/jacoco/jacoco.csv") as f:
+              for row in csv.DictReader(f):
+                  missed += int(row["LINE_MISSED"])
+                  covered += int(row["LINE_COVERED"])
+          total = missed + covered
+          pct = 100 * covered / total if total else 0
+          print("### Cobertura de lineas (JaCoCo)")
+          print(f"{covered}/{total} lineas cubiertas = **{pct:.1f}%** (minimo exigido: 100%)")
+          EOF
+          fi
+
+      - name: Guardar reportes de pruebas y cobertura
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reportes-pruebas
+          path: |
+            target/surefire-reports/
+            target/site/jacoco/
+          retention-days: 14
+
+  # -------------------------------------------------------------------------
+  # 2. Seguridad del codigo y de las dependencias (IE3)
+  # -------------------------------------------------------------------------
+  seguridad:
+    name: 2 - Seguridad (SonarCloud y dependencias)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+    steps:
+      - name: Descargar codigo (historial completo para Sonar)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configurar JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      # Bloquea el PR si introduce dependencias con vulnerabilidades altas o criticas.
+      - name: Revision de dependencias (solo PR)
+        if: github.event_name == 'pull_request'
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+
+      - name: Verificar configuracion de SonarCloud
+        if: github.event.pull_request.head.repo.fork != true
+        run: |
+          if [ -z "$SONAR_TOKEN" ] || [ -z "${{ vars.SONAR_ORGANIZATION }}" ] || [ -z "${{ vars.SONAR_PROJECT_KEY }}" ]; then
+            echo "::error::Falta configurar SonarCloud: secret SONAR_TOKEN y variables SONAR_ORGANIZATION y SONAR_PROJECT_KEY (ver README)."
+            exit 1
+          fi
+
+      - name: Cache de paquetes de Sonar
+        uses: actions/cache@v4
+        with:
+          path: ~/.sonar/cache
+          key: ${{ runner.os }}-sonar
+          restore-keys: ${{ runner.os }}-sonar
+
+      # sonar.qualitygate.wait=true => el paso FALLA si el Quality Gate no se cumple.
+      # Eso bloquea el pipeline: no se construye ni se despliega codigo inseguro.
+      - name: Analisis SonarCloud y Quality Gate
+        if: github.event.pull_request.head.repo.fork != true
+        run: >
+          mvn -B verify org.sonarsource.scanner.maven:sonar-maven-plugin:sonar
+          -Dsonar.host.url=https://sonarcloud.io
+          -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }}
+          -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
+          -Dsonar.qualitygate.wait=true
+
+  # -------------------------------------------------------------------------
+  # 3. Imagen Docker: construir, escanear y publicar (IE1, IE3)
+  # -------------------------------------------------------------------------
+  docker:
+    name: 3 - Imagen Docker (build, escaneo y publicacion)
+    runs-on: ubuntu-latest
+    needs: [test, seguridad]
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write # publicar en GitHub Container Registry
+    outputs:
+      image: ${{ steps.name.outputs.image }}
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - name: Descargar codigo
+        uses: actions/checkout@v4
+
+      # GHCR exige el nombre de la imagen en minusculas.
+      - name: Nombre de la imagen
+        id: name
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Configurar Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login en GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Trazabilidad: la imagen queda etiquetada con el SHA completo del commit
+      # y con labels OCI (revision, source, created...).
+      - name: Metadatos y tags de la imagen
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.name.outputs.image }}
+          tags: |
+            type=raw,value=sha-${{ github.sha }}
+            type=ref,event=branch
+            type=ref,event=pr
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      # Primero se construye localmente (sin publicar) para poder escanearla.
+      - name: Construir imagen (local)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          push: false
+          tags: pagos-svc:scan
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Bloqueo de seguridad: si hay vulnerabilidades con severidad
+      # CRITICAL/HIGH (con correccion disponible) el job falla y NO se publica.
+      # Accion fijada por SHA de commit (v0.36.0) por el incidente de cadena de
+      # suministro de marzo 2026 (CVE-2026-33634): nunca usar tags mutables.
+      - name: Escaneo de vulnerabilidades (Trivy)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: pagos-svc:scan
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: ${{ env.TRIVY_SEVERITY }}
+
+      - name: Publicar imagen en GHCR
+        id: push
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+
+      - name: Resumen de trazabilidad
+        if: github.event_name != 'pull_request'
+        run: |
+          {
+            echo "### Imagen publicada"
+            echo "- Imagen: \`${{ steps.name.outputs.image }}\`"
+            echo "- Tag inmutable: \`sha-${{ github.sha }}\`"
+            echo "- Digest: \`${{ steps.push.outputs.digest }}\`"
+            echo "- Commit: ${{ github.sha }}"
+            echo "- Ejecucion: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # -------------------------------------------------------------------------
+  # 4. Despliegue automatico en STAGING con Docker Compose (IE4, IE5)
+  # -------------------------------------------------------------------------
+  deploy-staging:
+    name: 4 - Despliegue Staging (Docker Compose)
+    runs-on: ubuntu-latest
+    needs: docker
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main')
+    timeout-minutes: 15
+    environment:
+      name: staging
+    permissions:
+      contents: read
+      packages: read
+    env:
+      IMAGE: ${{ needs.docker.outputs.image }}
+      TAG: sha-${{ github.sha }}
+    steps:
+      - name: Descargar codigo
+        uses: actions/checkout@v4
+
+      - name: Login en GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Se despliega EXACTAMENTE la imagen que construyo y escaneo este pipeline.
+      - name: Desplegar con Docker Compose
+        run: |
+          docker compose pull
+          docker compose up -d --no-build
+
+      - name: Esperar a que el servicio este saludable
+        run: |
+          for i in $(seq 1 30); do
+            status=$(docker inspect --format '{{.State.Health.Status}}' casoejemplo-pagos-svc 2>/dev/null || echo starting)
+            echo "intento $i/30: $status"
+            if [ "$status" = "healthy" ]; then exit 0; fi
+            sleep 5
+          done
+          echo "::error::El servicio no llego a estado healthy"
+          docker compose logs
+          exit 1
+
+      - name: Pruebas de humo (smoke tests)
+        run: |
+          curl -fsS http://localhost:8080/actuator/health | tee /dev/stderr | grep -q '"status":"UP"'
+          curl -fsS -o /dev/null -w "GET /api/pagos -> HTTP %{http_code}\n" http://localhost:8080/api/pagos
+
+      - name: Verificar trazabilidad commit -> imagen -> contenedor
+        run: |
+          revision=$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$IMAGE:$TAG")
+          echo "Commit del pipeline : $GITHUB_SHA"
+          echo "Commit en la imagen : $revision"
+          test "$revision" = "$GITHUB_SHA"
+          {
+            echo "### Staging desplegado"
+            echo "- Imagen: \`$IMAGE:$TAG\`"
+            echo "- Commit: $GITHUB_SHA (coincide con el label OCI de la imagen)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Detener entorno de staging simulado
+        if: always()
+        run: docker compose down
+
+  # -------------------------------------------------------------------------
+  # 5. Despliegue en PRODUCCION simulada con Kubernetes (kind) (IE3, IE4, IE5)
+  # -------------------------------------------------------------------------
+  deploy-produccion:
+    name: 5 - Despliegue Produccion simulada (Kubernetes)
+    runs-on: ubuntu-latest
+    needs: [docker, deploy-staging]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    timeout-minutes: 20
+    environment:
+      name: production
+    permissions:
+      contents: read
+      packages: read
+    env:
+      IMAGE: ${{ needs.docker.outputs.image }}
+      TAG: sha-${{ github.sha }}
+    steps:
+      - name: Descargar codigo
+        uses: actions/checkout@v4
+
+      - name: Login en GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # kind crea un cluster Kubernetes real dentro del runner (nuestra "nube simulada").
+      - name: Crear cluster Kubernetes (kind)
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: pagos
+
+      - name: Cargar la imagen publicada en el cluster
+        run: |
+          docker pull "$IMAGE:$TAG"
+          kind load docker-image "$IMAGE:$TAG" --name pagos
+
+      - name: Aplicar manifiestos de Kubernetes
+        run: |
+          # La imagen del Deployment se reemplaza por la que acaba de publicar este pipeline.
+          sed -i "s|image: .*pagos-svc:.*|image: ${IMAGE}:${TAG}|" k8s/deployment.yaml
+          kubectl apply -f k8s/
+          # Parametro de escalabilidad ajustable desde el pipeline
+          kubectl patch hpa pagos-svc --patch "{\"spec\":{\"minReplicas\":${MIN_REPLICAS}}}"
+          # Trazabilidad: el Deployment queda anotado con commit y ejecucion de origen
+          kubectl annotate deployment pagos-svc --overwrite \
+            git-sha="$GITHUB_SHA" \
+            pipeline-run="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            kubernetes.io/change-cause="deploy ${TAG}"
+
+      - name: Esperar el rollout
+        run: kubectl rollout status deployment/pagos-svc --timeout=180s
+
+      - name: Pruebas de humo (smoke tests)
+        run: |
+          kubectl port-forward svc/pagos-svc 8080:80 >/tmp/port-forward.log 2>&1 &
+          sleep 3
+          curl -fsS --retry 10 --retry-delay 3 --retry-connrefused http://localhost:8080/actuator/health | tee /dev/stderr | grep -q '"status":"UP"'
+          curl -fsS -o /dev/null -w "GET /api/pagos -> HTTP %{http_code}\n" http://localhost:8080/api/pagos
+
+      - name: Estado final del cluster y trazabilidad
+        if: always()
+        run: |
+          kubectl get deploy,pods,svc,hpa -o wide || true
+          {
+            echo "### Produccion simulada (Kubernetes)"
+            echo "- Imagen: \`$IMAGE:$TAG\`"
+            echo "- Commit: $GITHUB_SHA"
+            echo "- Replicas minimas (HPA): $MIN_REPLICAS"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Diagnostico si fallo el despliegue
+        if: failure()
+        run: |
+          kubectl describe deployment pagos-svc || true
+          kubectl logs -l app=pagos-svc --tail=100 || true
+
+  # -------------------------------------------------------------------------
+  # Alerta: si cualquier etapa falla en una rama, se abre un Issue en el repo.
+  # -------------------------------------------------------------------------
+  alerta-fallo:
+    name: Alerta - pipeline fallido
+    runs-on: ubuntu-latest
+    needs: [test, seguridad, docker, deploy-staging, deploy-produccion]
+    if: failure() && github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Crear Issue de alerta
+        uses: actions/github-script@v7
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        with:
+          script: |
+            const needs = JSON.parse(process.env.NEEDS);
+            const fallidos = Object.entries(needs)
+              .filter(([, j]) => j.result === 'failure')
+              .map(([nombre]) => nombre);
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Pipeline fallido en ${context.ref.replace('refs/heads/', '')} (${context.sha.slice(0, 7)})`,
+              body: [
+                `El pipeline CI/CD fallo.`,
+                ``,
+                `- Etapas fallidas: ${fallidos.join(', ') || 'ver ejecucion'}`,
+                `- Commit: ${context.sha}`,
+                `- Autor del push: @${context.actor}`,
+                `- Ejecucion: ${runUrl}`,
+              ].join('\n'),
+            });
