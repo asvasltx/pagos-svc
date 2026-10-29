@@ -17,7 +17,7 @@ jobs:
 
       - name: Saludar
         run: |
-          echo "Hola Mundo desde GitHub Actions"
+          echo "Hola Mundo, desde GitHub Actions"
           echo "Repositorio: $GITHUB_REPOSITORY"
           echo "Ref/rama: $GITHUB_REF_NAME"
           echo "Ejecutado por: $GITHUB_ACTOR"

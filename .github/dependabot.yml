@@ -1,0 +1,33 @@
+version: 2
+
+# Dependabot revisa semanalmente las dependencias y abre Pull Requests
+# hacia "develop" (Gitflow: nunca directo a main) con el formato de commit
+# del equipo: chore(deps): ...
+updates:
+  # Dependencias Java (pom.xml)
+  - package-ecosystem: maven
+    directory: "/"
+    target-branch: develop
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+
+  # Versiones de las acciones usadas en .github/workflows
+  - package-ecosystem: github-actions
+    directory: "/"
+    target-branch: develop
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore(ci)"
+
+  # Imagenes base del Dockerfile (maven y eclipse-temurin)
+  - package-ecosystem: docker
+    directory: "/"
+    target-branch: develop
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore(docker)"
