@@ -10,7 +10,7 @@ COPY src ./src
 RUN --mount=type=cache,target=/root/.m2 mvn -B -q package -DskipTests
 
 
-FROM eclipse-temurin:21-jre-alpine
+FROM eclipse-temurin:24-jre-alpine
 # Aplica parches de seguridad del sistema operativo (ej: brotli-libs)
 RUN apk upgrade --no-cache
 
