@@ -11,6 +11,8 @@ RUN --mount=type=cache,target=/root/.m2 mvn -B -q package -DskipTests
 
 
 FROM eclipse-temurin:21-jre-alpine
+# Aplica parches de seguridad del sistema operativo (ej: brotli-libs)
+RUN apk upgrade --no-cache
 
 RUN addgroup -S -g 10001 app && adduser -S -u 10001 -G app app
 
