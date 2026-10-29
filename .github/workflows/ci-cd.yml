@@ -146,7 +146,7 @@ jobs:
       # sonar.qualitygate.wait=true => el paso FALLA si el Quality Gate no se cumple.
       # Eso bloquea el pipeline: no se construye ni se despliega codigo inseguro.
       - name: Analisis SonarCloud y Quality Gate
-        if: github.event.pull_request.head.repo.fork != true
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: >
           mvn -B verify org.sonarsource.scanner.maven:sonar-maven-plugin:sonar
           -Dsonar.host.url=https://sonarcloud.io
