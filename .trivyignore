@@ -1,3 +1,6 @@
-   # CVE-2026-47884: spring-webmvc XsltView. Sin correccion gratuita en 6.2 (solo Spring 7 / Boot 4).
-   # No aplica: la app solo expone un @RestController y no usa XsltView ni vistas.
-   CVE-2026-47884 exp:2026-12-31
+# CVE-2026-47884: spring-webmvc XsltView. Sin correccion gratuita en 6.2 (solo Spring 7 / Boot 4).
+# No aplica: la app solo expone un @RestController y no usa XsltView ni vistas.
+CVE-2026-47884 exp:2026-12-31
+# CVE-2026-47890: spring-webmvc (Server-Sent Events con vistas). Sin correccion gratuita
+# en la linea 6.2 (solo Spring 7.0.9 / Boot 4.x). No aplica: la app no usa SSE ni vistas.
+CVE-2026-47890 exp:2026-12-31
