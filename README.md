@@ -207,9 +207,9 @@ mi aporte concreto consistió en adaptar, corregir y probar el Dockerfile y el a
 Durante la integración del pipeline, me enfrenté a varios errores. Por ejemplo, SonarCloud no analizaba los PRs debido a las restricciones de su plan gratuito, y Trivy bloqueaba la ejecución por vulnerabilidades de seguridad, lo cual me costo (e irrito sinceramente) mucho, tuve que apoyarme en la IA para entender el origen de los fallos, pude solucionarlo restringiendo el análisis de Sonar a la rama main y gestionando las vulnerabilidades de Trivy mediante la actualización de versiones y la documentación de excepciones en el archivo .trivyignore.
 Aprendi varias cosas con este proyecto, me acostumbré a trabajar correctamente con ramas y Pull Requests, tambien entiendo cómo funciona realmente el ciclo de vida de un pipeline y cómo orquestar contenedores con Kubernetes, algo que antes desconocía. Tambien me di cuenta que un bloqueo de seguridad puede aparecer por dependencias de un proyecto viejo y no necesariamente por mi código, algo que debi hacer antes de ocupar las herramientas que utilizamos fue revisar los limites del plan de estas
 
-### Reflexión de [Integrante 2]
-
-[COMPLETAR]
+### Reflexión de Renato Martinez
+mi participación en este proyecto me permitió conocer de manera más práctica cómo se construye y configura un pipeline CI/CD, entendiendo mejor la relación entre las distintas herramientas que se utilizan durante el desarrollo y despliegue de una aplicación. Durante el proceso surgieron dificultades al momento de integrar y configurar los servicios, ya que algunos errores no eran fáciles de identificar y fue necesario revisar las configuraciones y realizar distintas pruebas hasta encontrar una solución.
+Una de las cosas que más aprendí fue la importancia de automatizar las tareas, ya que esto permite detectar errores con anticipación y tener un mayor control sobre los cambios que se realizan en un proyecto. También comprendí que la seguridad debe considerarse durante todo el proceso y no solamente cuando la aplicación ya está terminada, porque una vulnerabilidad puede impedir que el despliegue continúe. En general, considero que este trabajo fue una buena oportunidad para reforzar mis conocimientos, aprender a utilizar herramientas que se emplean en entornos reales y entender que, aunque al principio algunas configuraciones pueden resultar complejas, la práctica y la investigación son fundamentales para resolver los problemas que aparecen.
 
 ## Modelo de ramificacion elegido: Gitflow
 
