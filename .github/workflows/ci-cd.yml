@@ -137,7 +137,7 @@ jobs:
           fi
 
       - name: Cache de paquetes de Sonar
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.sonar/cache
           key: ${{ runner.os }}-sonar
